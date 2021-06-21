@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='pyfase',
-    version='1.0.4',
+    version='1.0.5',
     url='https://github.com/jomorais/pyfase',
     license='GPLv3',
     author='Joaci Morais',
