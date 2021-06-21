@@ -13,7 +13,8 @@ try:
     import signal
     import inspect
     import zmq
-    from threading import Thread
+    import time
+    from threading import Thread, Event
     from json import loads, dumps
 except Exception as requirement_exception:
     print('requirements exception: %s' % requirement_exception)
@@ -46,6 +47,11 @@ class MicroService(object):
             self.name = service.__class__.__name__
             self.actions = {}
             self.tasks = {}
+            self.fsm_states = {}
+            self.fsm_current_state = 'idle'
+            self.fsm_data = None
+            self.fsm_event = Event()
+            self.fsm_timeout_event = 9999
             self.ctx = zmq.Context()
             self.sender = self.ctx.socket(zmq.PUSH)
             self.sender.connect(receiver_endpoint)
@@ -67,6 +73,8 @@ class MicroService(object):
                         self.receiver.setsockopt_string(zmq.SUBSCRIBE, u'%s:' % name)
                     elif '_task_wrapper_' in func.__name__:  # IS A TASK?
                         self.tasks[name] = func
+                    elif '_state_wrapper_' in func.__name__:  # IS A STATE?
+                        self.fsm_states[name] = func
         else:
             raise Exception('MicroService %s must be a class' % service)
 
@@ -81,6 +89,12 @@ class MicroService(object):
         def _task_wrapper_(*args, **kwargs):
             return function(*args, **kwargs)
         return _task_wrapper_
+
+    @staticmethod
+    def state(function):
+        def _state_wrapper_(*args, **kwargs):
+            return function(*args, **kwargs)
+        return _state_wrapper_
 
     @staticmethod
     def exit():
@@ -98,6 +112,14 @@ class MicroService(object):
     def on_response(self, service, data):
         pass
 
+    def on_idle(self):
+        pass
+
+    def request_state(self, next_state, data=None):
+        self.fsm_data = data
+        self.fsm_current_state = next_state
+        self.fsm_event.set()
+
     def start_task(self, task_name, data):
         if task_name in self.tasks:
             Thread(target=self.tasks[task_name], name=task_name, args=data).start()
@@ -114,11 +136,27 @@ class MicroService(object):
         if self.action_context:
             self.sender.send_string('%s:%s' % (self.o_pkg['s'], dumps({'s': self.name, 'd': data})), zmq.NOBLOCK)
 
-    def execute(self, enable_tasks=None):
+    def fsm(self):
+        try:
+            self.fsm_event.clear()
+            while True:
+                if self.fsm_event.wait(self.fsm_timeout_event):
+                    if self.fsm_current_state in self.fsm_states:
+                        self.fsm_event.clear()
+                        self.fsm_states[self.fsm_current_state](self, self.fsm_data)
+                        if self.fsm_event.is_set() is False:
+                            self.on_idle()
+        except Exception as fsm_exception:
+            print('fsm exception: %s' % fsm_exception)
+            os.kill(os.getpid(), signal.SIGKILL)
+            
+    def execute(self, enable_tasks=None, enable_fsm=None):
         try:
             if enable_tasks:
                 for name, task in self.tasks.items():
                     Thread(target=task, name=name, args=(self,)).start()
+            if enable_fsm:
+                Thread(target=self.fsm, name='fsm').start()
             self.sender.send_string('<r>:%s' % dumps({'s': self.name,
                                                       'a': [action for action in self.actions]}), zmq.NOBLOCK)
             while True:
@@ -137,14 +175,15 @@ class MicroService(object):
                         self.on_broadcast(service, self.o_pkg['d'])
                 elif '%s:' % self.name in pkg:  # IS A RESPONSE PACKAGE!
                     pos = pkg.find(':')
-                    self.o_pkg = loads(pkg[pos+1:])
+                    self.o_pkg = loads(pkg[pos + 1:])
                     self.on_response(self.o_pkg['s'], self.o_pkg['d'])
                 else:  # IS AN ACTION PACKAGE!
                     pos = pkg.find(':')
-                    self.o_pkg = loads(pkg[pos+1:])
+                    self.o_pkg = loads(pkg[pos + 1:])
                     self.action_context = True
                     self.actions[pkg[:pos]](self, self.o_pkg['s'], self.o_pkg['d'])
                     self.action_context = False
         except Exception and KeyboardInterrupt as execute_exception:
             print('execute exception: %s' % execute_exception)
             os.kill(os.getpid(), signal.SIGKILL)
+
