@@ -40,7 +40,8 @@ class Fase(object):
 
 
 class MicroService(object):
-    __slots__ = ('name', 'log', 'actions', 'tasks', 'ctx', 'sender', 'receiver', 'o_pkg', 'action_context')
+    __slots__ = ('name', 'log', 'actions', 'tasks', 'ctx', 'sender', 'receiver', 'o_pkg', 'action_context',
+                 'fsm_states', 'fsm_current_state', 'fsm_data', 'fsm_event', 'fsm_on_default_state_time')
 
     def __init__(self, service, sender_endpoint, receiver_endpoint):
         if inspect.isclass(type(service)):
@@ -48,10 +49,10 @@ class MicroService(object):
             self.actions = {}
             self.tasks = {}
             self.fsm_states = {}
-            self.fsm_current_state = 'idle'
+            self.fsm_current_state = 'on_default_state'
             self.fsm_data = None
             self.fsm_event = Event()
-            self.fsm_timeout_event = 9999
+            self.fsm_on_default_state_time = None
             self.ctx = zmq.Context()
             self.sender = self.ctx.socket(zmq.PUSH)
             self.sender.connect(receiver_endpoint)
@@ -74,6 +75,8 @@ class MicroService(object):
                     elif '_task_wrapper_' in func.__name__:  # IS A TASK?
                         self.tasks[name] = func
                     elif '_state_wrapper_' in func.__name__:  # IS A STATE?
+                        if name == 'on_default_state':
+                            raise Exception("You can't, create a state named 'on_default_state'! use builtin one.")
                         self.fsm_states[name] = func
         else:
             raise Exception('MicroService %s must be a class' % service)
@@ -112,13 +115,21 @@ class MicroService(object):
     def on_response(self, service, data):
         pass
 
-    def on_idle(self):
+    def on_default_state(self):
         pass
 
     def request_state(self, next_state, data=None):
         self.fsm_data = data
         self.fsm_current_state = next_state
         self.fsm_event.set()
+
+    def set_new_default_state_time(self, on_default_state_time):
+        if on_default_state_time:
+            if type(on_default_state_time) is int or type(on_default_state_time) is float:
+                self.fsm_on_default_state_time = on_default_state_time
+                self.fsm_current_state = 'on_default_state'
+            else:
+                raise Exception("please, assign on_default_state_time only with 'int' or 'float'")
 
     def start_task(self, task_name, data):
         if task_name in self.tasks:
@@ -140,22 +151,30 @@ class MicroService(object):
         try:
             self.fsm_event.clear()
             while True:
-                if self.fsm_event.wait(self.fsm_timeout_event):
+                if self.fsm_event.wait(self.fsm_on_default_state_time):
                     if self.fsm_current_state in self.fsm_states:
                         self.fsm_event.clear()
                         self.fsm_states[self.fsm_current_state](self, self.fsm_data)
                         if self.fsm_event.is_set() is False:
-                            self.on_idle()
+                            self.fsm_current_state = 'on_default_state'
+                            self.on_default_state()
+                else:
+                    self.on_default_state()
         except Exception as fsm_exception:
             print('fsm exception: %s' % fsm_exception)
             os.kill(os.getpid(), signal.SIGKILL)
-            
-    def execute(self, enable_tasks=None, enable_fsm=None):
+
+    def execute(self, enable_tasks=None, enable_fsm=None, on_default_state_time=None):
         try:
             if enable_tasks:
                 for name, task in self.tasks.items():
                     Thread(target=task, name=name, args=(self,)).start()
             if enable_fsm:
+                if on_default_state_time:
+                    if type(on_default_state_time) is int or type(on_default_state_time) is float:
+                        self.fsm_on_default_state_time = on_default_state_time
+                    else:
+                        raise Exception("please, assign on_default_state_time only with 'int' or 'float'")
                 Thread(target=self.fsm, name='fsm').start()
             self.sender.send_string('<r>:%s' % dumps({'s': self.name,
                                                       'a': [action for action in self.actions]}), zmq.NOBLOCK)
@@ -186,4 +205,5 @@ class MicroService(object):
         except Exception and KeyboardInterrupt as execute_exception:
             print('execute exception: %s' % execute_exception)
             os.kill(os.getpid(), signal.SIGKILL)
+
 
