@@ -21,6 +21,18 @@ except Exception as requirement_exception:
     exit(0)
 
 
+class PyFaseException(Exception):
+    pass
+
+
+def isSerializable(d):
+    try:
+        json.dumps(x)
+        return True
+    except (TypeError, OverflowError):
+        return False
+
+
 class Fase(object):
     __slots__ = ('ctx', 'receiver', 'sender')
 
@@ -76,10 +88,10 @@ class MicroService(object):
                         self.tasks[name] = func
                     elif '_state_wrapper_' in func.__name__:  # IS A STATE?
                         if name == 'on_default_state':
-                            raise Exception("You can't, create a state named 'on_default_state'! use builtin one.")
+                            raise PyFaseException("You can't, create a state named 'on_default_state'! use builtin one.")
                         self.fsm_states[name] = func
         else:
-            raise Exception('MicroService %s must be a class' % service)
+            raise PyFaseException('MicroService %s must be a class' % service)
 
     @staticmethod
     def action(function):
@@ -119,35 +131,61 @@ class MicroService(object):
         pass
 
     def request_state(self, next_state, data=None):
-        self.fsm_data = data
-        self.fsm_current_state = next_state
-        self.fsm_event.set()
+        if type(next_state) != str:
+            raise PyFaseException("request_state:: next_state must be a 'str' with the name of the state! not a %s" % 
+                                  type(next_state))
+        elif next_state == 'on_default_state':
+            raise PyFaseException("request_state:: you can't request on_default_state, "
+                                  "it runs automatically when there isn't pending states")
+        elif next_state in self.fsm_states:
+            self.fsm_data = data
+            self.fsm_current_state = next_state
+            self.fsm_event.set()
+        else:
+            raise PyFaseException('request_state:: state [ %s ] not found' % next_state)
 
     def set_new_default_state_time(self, on_default_state_time):
-        if on_default_state_time:
+        if type(on_default_state_time) != float and type(on_default_state_time) != int:
+            raise PyFaseException("please, assign on_default_state_time only with 'int' or 'float'")
+        if on_default_state_time > 0:
             if type(on_default_state_time) is int or type(on_default_state_time) is float:
                 self.fsm_on_default_state_time = on_default_state_time
                 self.fsm_current_state = 'on_default_state'
-            else:
-                raise Exception("please, assign on_default_state_time only with 'int' or 'float'")
+        else:
+            raise PyFaseException("only greater the zeros values are allowed")
 
     def start_task(self, task_name, data):
+        if type(task_name) != str:
+            raise PyFaseException("start_task:: task_name must be a 'str' with the name of the task! not a %s" %
+                                  type(task_name))
         if task_name in self.tasks:
             Thread(target=self.tasks[task_name], name=task_name, args=data).start()
         else:
-            print('start_task: unknown task: %s' % task_name)
+            raise PyFaseException("start_task:: task %s not found" % task_name)
 
     def send_broadcast(self, data):
+        if isSerializable(data) is False:
+            raise PyFaseException("request_action:: data must be a serializable JSON content, not a %s" %
+                                  type(data))
         self.sender.send_string('<b>:%s' % dumps({'s': self.name, 'd': data}), zmq.NOBLOCK)
 
     def request_action(self, action, data):
+        if type(action) != str:
+            raise PyFaseException("request_action:: action must be a 'str' with the name of the action! not a %s" %
+                                  type(action))
+        if isSerializable(data) is False:
+            raise PyFaseException("request_action:: data must be a serializable JSON content, not a %s" %
+                                  type(data))
         self.sender.send_string('%s:%s' % (action, dumps({'s': self.name, 'd': data})), zmq.NOBLOCK)
 
     def response(self, data):
+        if isSerializable(data) is False:
+            raise PyFaseException("request_action:: data must be a serializable JSON content, not a %s" %
+                                  type(data))
         if self.action_context:
             self.sender.send_string('%s:%s' % (self.o_pkg['s'], dumps({'s': self.name, 'd': data})), zmq.NOBLOCK)
 
-    def fsm(self):
+    def _fsm(self):
         try:
             self.fsm_event.clear()
             while True:
@@ -174,8 +212,8 @@ class MicroService(object):
                     if type(on_default_state_time) is int or type(on_default_state_time) is float:
                         self.fsm_on_default_state_time = on_default_state_time
                     else:
-                        raise Exception("please, assign on_default_state_time only with 'int' or 'float'")
-                Thread(target=self.fsm, name='fsm').start()
+                        raise PyFaseException("please, assign on_default_state_time only with 'int' or 'float'")
+                Thread(target=self._fsm, name='fsm').start()
             self.sender.send_string('<r>:%s' % dumps({'s': self.name,
                                                       'a': [action for action in self.actions]}), zmq.NOBLOCK)
             while True:
