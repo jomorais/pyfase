@@ -3,13 +3,15 @@ import inspect
 import zmq
 import threading
 from pyfase import MicroService, Fase, PyFaseException
+import time
 
 
 class MyMicroService(MicroService):
-    def __init__(self):
+    def __init__(self, sender, receiver):
         super(MyMicroService, self).__init__(self,
-                                             sender_endpoint='ipc:///tmp/sender',
-                                             receiver_endpoint='ipc:///tmp/receiver')
+                                             sender_endpoint=sender,
+                                             receiver_endpoint=receiver)
+        self.stop_task = threading.Event()
 
     @MicroService.action
     def action_1(self, service, data):
@@ -29,21 +31,23 @@ class MyMicroService(MicroService):
 
     @MicroService.task
     def task_1(self):
-        pass
+        while not self.stop_task.isSet():
+            time.sleep(0.01)
 
     @MicroService.task
     def task_2(self):
         pass
 
-
 class PyfaseInstanceTestCase(unittest.TestCase):
-
     def setUp(self):
-        self.myms = MyMicroService()
-        self.fase = Fase(sender_endpoint='ipc:///tmp/sender', receiver_endpoint='ipc:///tmp/receiver')
+        common_sender = 'ipc:///tmp/sender'
+        common_receiver = 'ipc:///tmp/receiver'
+        self.myms = MyMicroService(common_sender, common_receiver)
+        self.fase = Fase(sender_endpoint=common_sender, receiver_endpoint=common_receiver)
 
     def tearDown(self):
-        pass
+        del self.myms
+        del self.fase
 
     def test_request_state(self):
         self.assertEqual(self.myms.fsm_data, None)
@@ -89,7 +93,19 @@ class PyfaseInstanceTestCase(unittest.TestCase):
             self.myms.set_new_default_state_time(0)
         
     def test_start_task(self):
-        pass
+        def running_threads():
+            return [thread.name for thread in threading.enumerate()]
+        
+        with self.assertRaises(PyFaseException):
+            self.myms.start_task('non_existent_task', {})
+        self.assertFalse('task_1' in running_threads())
+        self.myms.start_task('task_1', [self.myms])
+        self.assertTrue('task_1' in running_threads())
+        self.myms.stop_task.set()
+        time_init = time.time()
+        while 'task_1' in running_threads() and time.time() - time_init < 3:
+            time.sleep(0.01)
+        self.assertFalse('task_1' in running_threads())
     
     def test_send_broadcast(self):
         pass

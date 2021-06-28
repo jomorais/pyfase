@@ -66,7 +66,7 @@ class PyfaseInstanceTestCase(unittest.TestCase):
     def test_instance_fsm_properties(self):
         self.assertEqual(self.myms.fsm_current_state, 'on_default_state')
         self.assertEqual(self.myms.fsm_data, None)
-        self.assertEqual(type(self.myms.fsm_event), threading.Event)
+        self.assertEqual(type(self.myms.fsm_event), type(threading.Event()))
         self.assertEqual(self.myms.fsm_on_default_state_time, None)
         self.myms.set_new_default_state_time(0.25)
         self.assertEqual(self.myms.fsm_on_default_state_time, 0.25)

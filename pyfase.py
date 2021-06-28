@@ -27,7 +27,7 @@ class PyFaseException(Exception):
 
 def isSerializable(d):
     try:
-        json.dumps(x)
+        x = dumps(d)
         return True
     except (TypeError, OverflowError):
         return False

@@ -2,3 +2,7 @@
 build
 dist
 pyfase.egg-info
+venv/
+.tox/
+__pycache__/
+*.pyc
